@@ -1,0 +1,46 @@
+name: CD Pipeline
+
+on:
+  repository_dispatch:
+    types: [deploy-application]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Infra Repo
+        uses: actions/checkout@v4
+
+      - name: Read Manifest from Event
+        id: parse
+        run: |
+          echo "${{ github.event.client_payload.manifest_content }}" > manifests/${{ github.event.client_payload.environment }}.yml
+          IMAGE_URI=$(yq e '.image_uri' manifests/${{ github.event.client_payload.environment }}.yml)
+          IMAGE_TAG=$(yq e '.image_tag' manifests/${{ github.event.client_payload.environment }}.yml)
+          ENV=$(yq e '.environment' manifests/${{ github.event.client_payload.environment }}.yml)
+          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+          echo "ENV=$ENV" >> $GITHUB_ENV
+
+      - name: Terraform Init
+        run: |
+          cd terraform
+          terraform init
+
+      # --------------------------
+      # Production Approval Step
+      # --------------------------
+      - name: Manual Approval for Production
+        if: github.event.client_payload.environment == 'prod'
+        uses: hmarr/auto-approve-action@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Terraform Apply
+        run: |
+          cd terraform
+          terraform apply -auto-approve \
+            -var "image_uri=${IMAGE_URI}" \
+            -var "image_tag=${IMAGE_TAG}" \
+            -var "environment=${ENV}"
+

@@ -1,0 +1,66 @@
+name: Application CI Pipeline
+
+on:
+  push:
+    branches: [dev, sit, main]  # dev -> dev, sit -> SIT, main -> preprod/prod
+  pull_request:
+    branches: [dev, sit, main]
+
+env:
+  JAVA_VERSION: '17'
+  NODE_VERSION: '18'
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: 123456789.dkr.ecr.us-east-1.amazonaws.com
+  IMAGE_NAME: my-app
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # --------------------------
+      # Build Docker Image
+      # --------------------------
+      - name: Build Docker Image
+        run: |
+          IMAGE_TAG=${GITHUB_REF_NAME}-$(date +%Y%m%d)-${GITHUB_SHA::8}
+          docker build -t ${{ env.IMAGE_NAME }}:$IMAGE_TAG .
+          docker tag ${{ env.IMAGE_NAME }}:$IMAGE_TAG ${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:$IMAGE_TAG
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Push Docker Image
+        run: |
+          docker push ${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:$IMAGE_TAG
+
+      # --------------------------
+      # Update Manifest in Infra Repo
+      # --------------------------
+      - name: Update Manifest
+        run: |
+          ENVIRONMENT=""
+          if [[ "${GITHUB_REF_NAME}" == "dev" ]]; then ENVIRONMENT="dev"; fi
+          if [[ "${GITHUB_REF_NAME}" == "sit" ]]; then ENVIRONMENT="sit"; fi
+          if [[ "${GITHUB_REF_NAME}" == "main" ]]; then ENVIRONMENT="prod"; fi
+
+          echo "environment: $ENVIRONMENT" > manifest.yml
+          echo "image_uri: ${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}" >> manifest.yml
+          echo "image_tag: $IMAGE_TAG" >> manifest.yml
+          echo "commit_sha: ${GITHUB_SHA}" >> manifest.yml
+
+      - name: Push Manifest to Infra Repo
+        uses: peter-evans/repository-dispatch@v2
+        with:
+          token: ${{ secrets.INFRA_REPO_PAT }}
+          repository: my-org/infra-repo
+          event-type: deploy-application
+          client-payload: |
+            {
+              "environment": "${{ github.ref_name }}",
+              "manifest_content": "$(cat manifest.yml)"
+            }
+
