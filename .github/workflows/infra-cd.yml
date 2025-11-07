@@ -7,13 +7,22 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: ${{ github.event.client_payload.environment }}
     steps:
+
+      # --------------------------
+      # 1️⃣ Checkout Infra Repo
+      # --------------------------
       - name: Checkout Infra Repo
         uses: actions/checkout@v4
 
-      - name: Read Manifest from Event
+      # --------------------------
+      # 2️⃣ Read Manifest from Event
+      # --------------------------
+      - name: Parse Manifest
         id: parse
         run: |
+          mkdir -p manifests
           echo "${{ github.event.client_payload.manifest_content }}" > manifests/${{ github.event.client_payload.environment }}.yml
           IMAGE_URI=$(yq e '.image_uri' manifests/${{ github.event.client_payload.environment }}.yml)
           IMAGE_TAG=$(yq e '.image_tag' manifests/${{ github.event.client_payload.environment }}.yml)
@@ -22,13 +31,25 @@ jobs:
           echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
           echo "ENV=$ENV" >> $GITHUB_ENV
 
+      # --------------------------
+      # 3️⃣ Configure AWS via OIDC
+      # --------------------------
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_${{ github.event.client_payload.environment | upper }} }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      # --------------------------
+      # 4️⃣ Terraform Init
+      # --------------------------
       - name: Terraform Init
         run: |
           cd terraform
           terraform init
 
       # --------------------------
-      # Production Approval Step
+      # 5️⃣ Production Approval Step
       # --------------------------
       - name: Manual Approval for Production
         if: github.event.client_payload.environment == 'prod'
@@ -36,6 +57,9 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # --------------------------
+      # 6️⃣ Terraform Apply
+      # --------------------------
       - name: Terraform Apply
         run: |
           cd terraform
@@ -43,4 +67,3 @@ jobs:
             -var "image_uri=${IMAGE_URI}" \
             -var "image_tag=${IMAGE_TAG}" \
             -var "environment=${ENV}"
-
